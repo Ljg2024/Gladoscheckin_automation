@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+import sys
 
 from pypushdeer import PushDeer
 
@@ -31,10 +32,37 @@ if __name__ == '__main__':
         }
         
         for cookie in cookies:
-            checkin = requests.post(check_in_url, headers={'cookie': cookie, 'referer': referer, 'origin': origin,
-                                    'user-agent': useragent, 'content-type': 'application/json;charset=UTF-8'}, data=json.dumps(payload))
-            state = requests.get(status_url, headers={
-                                'cookie': cookie, 'referer': referer, 'origin': origin, 'user-agent': useragent})
+            cookie = cookie.strip()
+            if not cookie:
+                continue
+
+            try:
+                checkin = requests.post(
+                    check_in_url,
+                    headers={
+                        'cookie': cookie,
+                        'referer': referer,
+                        'origin': origin,
+                        'user-agent': useragent,
+                        'content-type': 'application/json;charset=UTF-8'
+                    },
+                    data=json.dumps(payload),
+                    timeout=20
+                )
+                state = requests.get(
+                    status_url,
+                    headers={
+                        'cookie': cookie,
+                        'referer': referer,
+                        'origin': origin,
+                        'user-agent': useragent
+                    },
+                    timeout=20
+                )
+            except requests.RequestException as exc:
+                fail += 1
+                context += f"账号: unknown, P: 0, 剩余: error | 请求异常: {exc} | "
+                continue
 
             message_status = ""
             points = 0
@@ -42,36 +70,33 @@ if __name__ == '__main__':
             
             
             if checkin.status_code == 200:
-                # 解析返回的json数据
-                result = checkin.json()     
-                # 获取签到结果
-                check_result = result.get('message')
-                points = result.get('points')
+                checkin_result = checkin.json()
+                check_result = checkin_result.get('message', 'unknown')
+                points = checkin_result.get('points', 0)
+                check_code = checkin_result.get('code', -1)
 
-                # 获取账号当前状态
-                result = state.json()
-                # 获取剩余时间
-                leftdays = int(float(result['data']['leftDays']))
-                # 获取账号email
-                email = result['data']['email']
+                state_result = state.json() if state.status_code == 200 else {}
+                state_data = state_result.get('data') or {}
+                leftdays_raw = state_data.get('leftDays')
+                email = state_data.get('email', 'unknown')
                 
                 print(check_result)
-                if "Checkin! Got" in check_result:
+                if check_code == 0 and "Checkin! Got" in check_result:
                     success += 1
                     message_status = "签到成功，会员点数 + " + str(points)
-                elif "Checkin Repeats!" in check_result:
+                elif check_code == 0 and "Checkin Repeats!" in check_result:
                     repeats += 1
                     message_status = "重复签到，明天再来"
                 else:
                     fail += 1
-                    message_status = "签到失败，请检查..."
+                    message_status = "签到失败: " + str(check_result)
 
-                if leftdays is not None:
-                    message_days = f"{leftdays} 天"
+                if leftdays_raw is not None:
+                    message_days = f"{int(float(leftdays_raw))} 天"
                 else:
                     message_days = "error"
             else:
-                email = ""
+                email = "unknown"
                 message_status = "签到请求URL失败, 请检查..."
                 message_days = "error"
 
@@ -84,7 +109,12 @@ if __name__ == '__main__':
     else:
         # 推送内容 
         title = f'# 未找到 cookies!'
+        fail = 1
 
     # 推送消息
     #pushdeer = PushDeer(pushkey=sckey) 
     #pushdeer.send_text(title, desp=context)
+
+    # 失败时让 GitHub Actions 标红，便于定位问题
+    if fail > 0 and success == 0 and repeats == 0:
+        sys.exit(1)
